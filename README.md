@@ -80,33 +80,35 @@ The `container` package must be installed. Check:
 If missing — download the matching `container-X.XX.X-arm64.npk` from mikrotik.com,
 upload it, and reboot.
 
-### 3. Create API user
+### 3. Create API user and enable REST API
 
-The container accesses MikroTik REST API. Create a dedicated user restricted to the
-container's IP:
+The container accesses MikroTik REST API over HTTP. Create a dedicated user
+restricted to the container IP:
 
 ```routeros
 /user/add name=api group=full password=<secret> address=172.16.0.2
 ```
 
-Enable the web service (REST API is served on `www` or `www-ssl`):
+The REST API is served by the `www` service (port 80). By default `www` is
+bound to the LAN subnet only. Add the container subnet to the allowed addresses:
 
 ```routeros
-# HTTP (simpler, acceptable on trusted LAN)
-/ip/service/enable www
-/ip/service/set www address=172.16.0.0/30
+# Check current address restriction
+/ip/service/print where name=www
 
-# Or HTTPS with self-signed cert
-/certificate/add name=local-cert common-name=10.0.10.1 days-valid=3650 \
-    key-size=2048 key-usage=digital-signature,key-encipherment,tls-server
-/certificate/sign local-cert
-/ip/service/enable www-ssl
-/ip/service/set www-ssl certificate=local-cert address=172.16.0.0/30
+# Add container subnet alongside your existing LAN (adjust 10.0.10.0/24 to yours)
+/ip/service/set www address=10.0.10.0/24,172.16.0.2/32
 ```
 
-Set `"address"` in `config.json` accordingly:
-- HTTP:  `"address": "http://10.0.10.1"`
-- HTTPS: `"address": "https://10.0.10.1"` with `"tls_skip_verify": true`
+> **Why not restrict to just 172.16.0.2/32?** The `www` service also serves
+> WebFig. Removing your LAN subnet will lock you out of the web interface.
+
+In `config.json` set:
+```json
+"address": "http://10.0.10.1",
+"username": "api",
+"password": "<secret>"
+```
 
 ### 4. Container network
 
@@ -133,8 +135,13 @@ Allow the container to reach external DNS upstreams (77.88.8.8, 1.1.1.1, etc.):
 
 ### 6. Firewall
 
+Two rules are needed. The default MikroTik firewall drops input traffic not
+coming from the LAN interface list — `veth-dns` is not in that list, so
+without an explicit rule the container cannot reach the REST API.
+
 ```routeros
-# Container → MikroTik REST API (HTTP port 80 or HTTPS port 443)
+# Container → MikroTik REST API on port 80 (www service)
+# Must be placed before the "drop all not coming from LAN" rule
 /ip/firewall/filter/add \
     chain=input \
     action=accept \
@@ -145,7 +152,8 @@ Allow the container to reach external DNS upstreams (77.88.8.8, 1.1.1.1, etc.):
     comment=dns-proxy:api \
     place-before=[find comment="defconf: drop all not coming from LAN"]
 
-# Container → internet (upstream DNS queries: 77.88.8.8, 1.1.1.1, etc.)
+# Container → internet for upstream DNS queries (77.88.8.8, 1.1.1.1, etc.)
+# Must be placed before the "drop all from WAN not DSTNATed" rule
 /ip/firewall/filter/add \
     chain=forward \
     action=accept \
@@ -154,8 +162,6 @@ Allow the container to reach external DNS upstreams (77.88.8.8, 1.1.1.1, etc.):
     comment=dns-proxy:out \
     place-before=[find comment="defconf: drop all from WAN not DSTNATed"]
 ```
-
-> If using HTTPS for the REST API change `dst-port=80` to `dst-port=443`.
 
 ### 7. Container global config
 
