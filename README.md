@@ -51,40 +51,195 @@ make docker-save
 
 ## Deploy to MikroTik
 
+Tested on hAP ax3 (RBD53G-5HaxD2HaxD), RouterOS 7.21.3, arm64, USB flash as storage.
+
+### 1. Build and upload
+
 ```bash
-# Upload image to MikroTik (USB drive mounted as usb1)
-scp build/dns-geosite-proxy-arm64.tar.gz admin@192.168.88.1:/usb1/
-scp config.json admin@192.168.88.1:/usb1/
+# Build arm64 image and save as tar.gz
+make docker-save
+# -> build/dns-geosite-proxy-arm64.tar.gz
+
+# Upload image and dlc.dat to MikroTik USB
+# Note: USB mounts as usb1-part1 (partition name, not usb1)
+scp build/dns-geosite-proxy-arm64.tar.gz admin@10.0.10.1:/usb1-part1/
+scp data/dlc.dat admin@10.0.10.1:/usb1-part1/mounts/dns-proxy/data/dlc.dat
+scp config.json admin@10.0.10.1:/usb1-part1/mounts/dns-proxy/config.json
 ```
 
-On the router (Winbox terminal or SSH):
+> Check the actual USB mount path on your router: `/file/print` — it may be `usb1`, `usb1-part1`, or `disk1` depending on the drive.
+
+### 2. Container package
+
+The `container` package must be installed. Check:
 
 ```routeros
-# Create container network
-/interface/veth/add name=veth-dns address=172.20.0.2/24 gateway=172.20.0.1
-/ip/address/add address=172.20.0.1/24 interface=veth-dns
+/system/package/print
+```
 
-# Import image
-/container/add file=usb1/dns-geosite-proxy-arm64.tar.gz \
+If missing — download the matching `container-X.XX.X-arm64.npk` from mikrotik.com,
+upload it, and reboot.
+
+### 3. Create API user
+
+The container accesses MikroTik REST API. Create a dedicated user restricted to the
+container's IP:
+
+```routeros
+/user/add name=api group=full password=<secret> address=172.16.0.2
+```
+
+Enable the web service (REST API is served on `www` or `www-ssl`):
+
+```routeros
+# HTTP (simpler, acceptable on trusted LAN)
+/ip/service/enable www
+/ip/service/set www address=172.16.0.0/30
+
+# Or HTTPS with self-signed cert
+/certificate/add name=local-cert common-name=10.0.10.1 days-valid=3650 \
+    key-size=2048 key-usage=digital-signature,key-encipherment,tls-server
+/certificate/sign local-cert
+/ip/service/enable www-ssl
+/ip/service/set www-ssl certificate=local-cert address=172.16.0.0/30
+```
+
+Set `"address"` in `config.json` accordingly:
+- HTTP:  `"address": "http://10.0.10.1"`
+- HTTPS: `"address": "https://10.0.10.1"` with `"tls_skip_verify": true`
+
+### 4. Container network
+
+```routeros
+# veth interface for the container (/30 = 2 usable IPs)
+/interface/veth/add name=veth-dns address=172.16.0.2/30 gateway=172.16.0.1
+
+# Assign the router side of the pair
+/ip/address/add address=172.16.0.1/30 interface=veth-dns
+```
+
+### 5. NAT
+
+Allow the container to reach external DNS upstreams (77.88.8.8, 1.1.1.1, etc.):
+
+```routeros
+/ip/firewall/nat/add \
+    chain=srcnat \
+    action=masquerade \
+    src-address=172.16.0.2 \
+    out-interface-list=wan \
+    comment=dns-proxy:masquerade
+```
+
+### 6. Firewall
+
+```routeros
+# Container → MikroTik REST API (HTTP port 80 or HTTPS port 443)
+/ip/firewall/filter/add \
+    chain=input \
+    action=accept \
+    in-interface=veth-dns \
+    protocol=tcp \
+    dst-port=80 \
+    connection-state=new \
+    comment=dns-proxy:api \
+    place-before=[find comment="defconf: drop all not coming from LAN"]
+
+# Container → internet (upstream DNS queries: 77.88.8.8, 1.1.1.1, etc.)
+/ip/firewall/filter/add \
+    chain=forward \
+    action=accept \
+    in-interface=veth-dns \
+    connection-state=new \
+    comment=dns-proxy:out \
+    place-before=[find comment="defconf: drop all from WAN not DSTNATed"]
+```
+
+> If using HTTPS for the REST API change `dst-port=80` to `dst-port=443`.
+
+### 7. Container global config
+
+Where to store image layers and pull cache (set once):
+
+```routeros
+/container/config/set \
+    layer-dir=/usb1-part1/docker/layers \
+    tmpdir=/usb1-part1/docker/pull \
+    memory-high=256MiB
+```
+
+### 8. Mount points
+
+```routeros
+# Config file (read-only)
+/container/mounts/add \
+    list=dns-proxy \
+    comment=dns-config \
+    src=/usb1-part1/mounts/dns-proxy/config.json \
+    dst=/etc/dns-proxy/config.json \
+    read-only=yes
+
+# Data directory: dlc.dat + auto-update target (read-write)
+/container/mounts/add \
+    list=dns-proxy \
+    comment=dns-data \
+    src=/usb1-part1/mounts/dns-proxy/data \
+    dst=/data
+```
+
+### 9. Environment variables
+
+```routeros
+/container/envs/add list=time_zone key=TZ value=Europe/Moscow
+```
+
+### 10. Create and start container
+
+```routeros
+/container/add \
+    file=usb1-part1/dns-geosite-proxy-arm64.tar.gz \
     interface=veth-dns \
-    envlist=dns-proxy \
-    mounts=dns-data,dns-config
-
-# Define volume mounts
-/container/mounts/add name=dns-data src=/usb1/data dst=/data
-/container/mounts/add name=dns-config src=/usb1 dst=/etc/dns-proxy
-
-# Start container
-/container/start [find name=dns-geosite-proxy]
-
-# Point MikroTik DNS to the container
-/ip/dns/set servers=172.20.0.2
+    root-dir=/usb1-part1/containers/dns-proxy \
+    layer-dir=/usb1-part1/docker/layers \
+    mountlists=dns-proxy \
+    envlists=time_zone \
+    workdir=/app \
+    start-on-boot=yes
 ```
 
-Create a restricted API user for the container:
+Wait for extraction (status goes `extracting` → `stopped`):
 
 ```routeros
-/user/add name=dns-proxy group=api password=<secret> address=172.20.0.2
+/container/print
+```
+
+Then start:
+
+```routeros
+/container/start 0
+```
+
+### 11. Verify
+
+Check container logs (Container → Log tab in Winbox, or):
+
+```routeros
+/log/print where topics~"container"
+```
+
+Expected startup output:
+```
+[entrypoint] Starting dns-geosite-proxy...
+[INFO]  dns-geosite-proxy v0.1.0 (commit: abc1234, built: 2026-03-09T...)
+[INFO]  geosite: loaded 1420 categories from /data/dlc.dat
+[INFO]  listening on :53 (async_push=true)
+```
+
+Test DNS resolution via the container:
+
+```routeros
+:resolve server=172.16.0.2 domain-name=youtube.com
+/ip/firewall/address-list/print where list=ksc_proxy
 ```
 
 ## Configuration
