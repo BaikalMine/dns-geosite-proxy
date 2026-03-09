@@ -24,7 +24,16 @@ REGISTRY     ?=
 GOOS         := linux
 GOARCH       := arm64
 CGO_ENABLED  := 0
-LDFLAGS      := -ldflags="-s -w -extldflags=-static"
+
+# Version info - injected into binary via ldflags at build time
+VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT       := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+BUILD_DATE   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+LDFLAGS      := -ldflags="-s -w -extldflags=-static \
+  -X main.version=$(VERSION) \
+  -X main.commit=$(COMMIT) \
+  -X main.buildDate=$(BUILD_DATE)"
 
 # Paths
 SRC_DIR      := ./src

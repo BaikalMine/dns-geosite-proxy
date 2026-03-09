@@ -26,6 +26,14 @@ import (
 	"dns-geosite-proxy/mikrotik"
 )
 
+// Build-time variables injected via -ldflags by Makefile.
+// Defaults are used when building without make (e.g. go run ./...).
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+)
+
 func main() {
 	// Command-line flags
 	configPath := flag.String(
@@ -44,6 +52,7 @@ func main() {
 
 	// Initialize logger first so all subsequent messages respect log_level
 	logger.Init(cfg.LogLevel)
+	logger.Info("dns-geosite-proxy %s (commit: %s, built: %s)", version, commit, buildDate)
 
 	// Load geosite database (dlc.dat)
 	db, err := geosite.Load(cfg.GeositePath)
@@ -65,7 +74,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("dns-geosite-proxy listening on %s (async_push=%v)", cfg.Listen, cfg.AsyncPush)
+	logger.Info("listening on %s (async_push=%v)", cfg.Listen, cfg.AsyncPush)
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)
