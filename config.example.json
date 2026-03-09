@@ -1,0 +1,74 @@
+{
+  "listen": ":53",
+  "geosite_path": "/data/dlc.dat",
+  "async_push": true,
+  "log_level": "info",
+
+  "dns": {
+    "servers": [
+      {
+        "_comment": "Local DNS for home.arpa zone (e.g. your internal resolver)",
+        "address": "10.0.10.1",
+        "domains": [
+          "full:home.arpa",
+          "domain:home.arpa"
+        ],
+        "tag": "direct",
+        "query_strategy": "UseIPv4",
+        "skip_fallback": true
+      },
+      {
+        "_comment": "Yandex DNS for Russian domains - go direct, no VPN needed",
+        "address": "77.88.8.8",
+        "domains": [
+          "geosite:category-ru",
+          "geosite:category-gov-ru"
+        ],
+        "tag": "direct",
+        "query_strategy": "UseIPv4",
+        "skip_fallback": true
+      },
+      {
+        "_comment": "Ads/malware - return NXDOMAIN, no upstream query",
+        "address": "",
+        "domains": [
+          "geosite:category-ads-all"
+        ],
+        "tag": "block",
+        "query_strategy": "UseIPv4"
+      },
+      {
+        "_comment": "Everything else - route via VPN, use Cloudflare DoH",
+        "address": "https://1.1.1.1/dns-query",
+        "tag": "proxy",
+        "query_strategy": "UseIP",
+        "fallback": true
+      }
+    ]
+  },
+
+  "mikrotik": {
+    "address": "https://192.168.88.1",
+    "username": "dns-proxy",
+    "password": "changeme",
+    "tls_skip_verify": true,
+
+    "address_lists": {
+      "proxy": {
+        "_comment": "IPs routed through VPN. TTL 14 days, refresh if < 3 days remain.",
+        "list": "vpn_routes",
+        "ttl": "336h",
+        "refresh": "72h"
+      },
+      "block": {
+        "_comment": "Optional: add blocked IPs to a firewall list for logging/stats.",
+        "list": "block_list",
+        "ttl": "720h",
+        "refresh": "120h"
+      }
+    },
+
+    "ipv4": { "enabled": true },
+    "ipv6": { "enabled": false }
+  }
+}

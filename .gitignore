@@ -1,0 +1,40 @@
+# Sync scripts and rsync filter (local helpers, not part of the project)
+sync.*
+pull.*
+push.*
+.rsync-filter
+
+# Build artifacts
+/build/
+*.tar.gz
+*.tar
+
+# Downloaded data files (auto-generated)
+/data/dlc.dat
+/data/*.dat
+
+# Config with secrets (keep only example)
+/config.json
+/config.test.json
+!/config.example.json
+
+# Go
+/src/vendor/
+/src/*.test
+/src/coverage.out
+/src/coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.orig
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/logs/
