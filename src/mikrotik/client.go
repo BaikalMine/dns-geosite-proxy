@@ -132,7 +132,7 @@ func (c *Client) do(req *http.Request, v interface{}) error {
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", req.Method, req.URL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

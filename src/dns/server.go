@@ -118,7 +118,7 @@ func (s *Server) ReloadGeosite(path string) error {
 // handleDNS is the miekg/dns handler - entry point for every DNS query.
 func (s *Server) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if len(req.Question) == 0 {
-		dns.HandleFailed(w, req)
+		servfail(w, req)
 		return
 	}
 
@@ -151,7 +151,7 @@ func (s *Server) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	resp, err := s.forward(req, result.Upstream)
 	if err != nil {
 		logger.Warn("[dns] forward %s via %s: %v", strings.TrimSuffix(domain, "."), result.Upstream, err)
-		dns.HandleFailed(w, req)
+		servfail(w, req)
 		return
 	}
 
@@ -180,6 +180,14 @@ func (s *Server) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 			}
 		}
 	}
+}
+
+// servfail replies with SERVFAIL (RcodeServerFailure) to the client.
+// Replaces the deprecated dns.HandleFailed which was removed in miekg/dns v1.1.60+.
+func servfail(w dns.ResponseWriter, req *dns.Msg) {
+	resp := new(dns.Msg)
+	resp.SetRcode(req, dns.RcodeServerFailure)
+	_ = w.WriteMsg(resp)
 }
 
 // forward sends req to the upstream and returns the response.
@@ -253,7 +261,7 @@ func (s *Server) forwardDoH(req *dns.Msg, upstream string) (*dns.Msg, error) {
 	if err != nil {
 		return nil, fmt.Errorf("doh http post %s: %w", upstream, err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("doh upstream %s returned HTTP %d", upstream, httpResp.StatusCode)

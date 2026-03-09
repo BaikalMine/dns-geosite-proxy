@@ -105,9 +105,11 @@ bound to the LAN subnet only. Add the container subnet to the allowed addresses:
 
 In `config.json` set:
 ```json
-"address": "http://10.0.10.1",
-"username": "api",
-"password": "<secret>"
+{
+  "address": "http://10.0.10.1",
+  "username": "api",
+  "password": "<secret>"
+}
 ```
 
 ### 4. Container network
@@ -311,10 +313,12 @@ Tags `direct`, `proxy`, `block` are built-in conventions.
 Maps routing tags to MikroTik address-list names with TTL policy:
 
 ```json
-"proxy": {
-  "list": "vpn_routes",
-  "ttl": "336h",
-  "refresh": "72h"
+{
+  "proxy": {
+    "list": "vpn_routes",
+    "ttl": "336h",
+    "refresh": "72h"
+  }
 }
 ```
 
