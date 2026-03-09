@@ -245,7 +245,42 @@ Test DNS resolution via the container:
 
 ```routeros
 :resolve server=172.16.0.2 domain-name=youtube.com
-/ip/firewall/address-list/print where list=ksc_proxy
+/ip/firewall/address-list/print where list=vpn_proxy
+```
+
+### 12. Routing via VPN
+
+At this point the container resolves domains and pushes IPs into `vpn_proxy`
+address-list. To actually route that traffic through a VPN gateway, add a
+mangle rule and a routing table entry.
+
+```routeros
+# Mark packets destined to vpn_proxy addresses (from LAN) with a routing mark
+/ip/firewall/mangle/add \
+    action=mark-routing \
+    chain=prerouting \
+    dst-address-list=vpn_proxy \
+    in-interface-list=lan \
+    new-routing-mark=vpn-route \
+    comment=dns-proxy:vpn-route
+
+# Route marked packets through the VPN gateway
+# Replace "vpn" with your actual VPN interface or gateway IP
+/ip/route/add \
+    gateway=vpn \
+    routing-table=vpn-route
+```
+
+> `gateway=vpn` is the name or IP of your VPN tunnel interface (e.g. `ovpn-client1`,
+> `wireguard1`, or an IP like `10.8.0.1`). Adjust to match your setup.
+
+After adding these rules, traffic to any IP in `vpn_proxy` from LAN clients
+will be routed through the VPN. Verify with:
+
+```routeros
+/ip/firewall/mangle/print
+/ip/route/print where routing-table=vpn-route
+/ip/firewall/address-list/print where list=vpn_proxy
 ```
 
 ## Configuration
