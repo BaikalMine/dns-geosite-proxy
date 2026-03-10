@@ -131,7 +131,7 @@ func (s *Server) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	s.mu.RUnlock()
 
 	// Log every query at INFO: domain, tag, matched rule, upstream
-	logger.Info("[dns] query %-40s tag=%-8s match=%s:%s upstream=%s",
+	logger.Debug("[dns] query %-40s tag=%-8s match=%s:%s upstream=%s",
 		strings.TrimSuffix(domain, "."),
 		result.Tag,
 		result.MatchType, result.MatchValue,
