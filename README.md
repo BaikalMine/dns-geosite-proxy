@@ -44,8 +44,9 @@ make download-dlc
 cp config.example.json config.json
 # edit config.json: set mikrotik.address, username, password
 
-# 4. Build Docker image for linux/arm/v7 and save as .tar.gz
+# 4. Build Docker image for linux/arm/v7 and save for RouterOS import
 make docker-save
+# -> build/dns-geosite-proxy-armv7.tar
 # -> build/dns-geosite-proxy-armv7.tar.gz
 ```
 
@@ -56,13 +57,14 @@ Targets RouterOS 7.x containers on linux/arm/v7 devices. Use USB flash or other 
 ### 1. Build and upload
 
 ```bash
-# Build ARMv7 image and save as tar.gz
+# Build ARMv7 image and save for RouterOS import
 make docker-save
+# -> build/dns-geosite-proxy-armv7.tar
 # -> build/dns-geosite-proxy-armv7.tar.gz
 
 # Upload image and dlc.dat to MikroTik USB
 # Note: USB mounts as usb1-part1 (partition name, not usb1)
-scp build/dns-geosite-proxy-armv7.tar.gz admin@10.0.10.1:/usb1-part1/
+scp build/dns-geosite-proxy-armv7.tar admin@10.0.10.1:/usb1-part1/
 scp data/dlc.dat admin@10.0.10.1:/usb1-part1/mounts/dns-proxy/data/dlc.dat
 scp config.json admin@10.0.10.1:/usb1-part1/mounts/dns-proxy/config.json
 ```
@@ -205,7 +207,7 @@ Where to store image layers and pull cache (set once):
 
 ```routeros
 /container/add \
-    file=usb1-part1/dns-geosite-proxy-armv7.tar.gz \
+    file=usb1-part1/dns-geosite-proxy-armv7.tar \
     interface=veth-dns \
     root-dir=/usb1-part1/containers/dns-proxy \
     layer-dir=/usb1-part1/docker/layers \

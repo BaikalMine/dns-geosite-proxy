@@ -42,7 +42,7 @@ RUN set -eux; \
 
 # Stage 2: Runtime
 # Target platform image. Only curl + crond added on top of Alpine.
-FROM --platform=${TARGETPLATFORM:-linux/arm/v7} alpine:3.19
+FROM alpine:3.19
 
 ARG BUILD_DATE
 ARG VERSION=dev

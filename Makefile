@@ -4,7 +4,7 @@
 #   build         Cross-compile for ARMv7 (MikroTik container)
 #   build-local   Build for local arch (dev/test)
 #   docker-build  Build Docker image linux/arm/v7 via buildx
-#   docker-save   Save image as .tar.gz for MikroTik import
+#   docker-save   Save image as RouterOS-compatible .tar and .tar.gz
 #   docker-load   Load saved image into local Docker
 #   download-dlc  Download latest dlc.dat from v2fly releases
 #   update-deps   go get -u ./... && tidy
@@ -19,6 +19,7 @@ BINARY_NAME  := dns-proxy
 IMAGE_NAME   := dns-geosite-proxy
 IMAGE_TAG    ?= latest
 REGISTRY     ?=
+SKOPEO_IMAGE ?= quay.io/skopeo/stable:latest
 
 # RouterOS container target
 DOCKER_PLATFORM ?= linux/arm/v7
@@ -45,8 +46,10 @@ SRC_DIR      := ./src
 BUILD_DIR    := ./build
 DOCKER_DIR   := ./docker
 DATA_DIR     := ./data
-IMAGE_TARBALL := $(BUILD_DIR)/$(IMAGE_NAME)-$(TARGET_ARCH).tar.gz
-BINARY_PATH   := $(BUILD_DIR)/$(BINARY_NAME)-$(TARGET_ARCH)
+IMAGE_TARBALL     := $(BUILD_DIR)/$(IMAGE_NAME)-$(TARGET_ARCH).tar
+IMAGE_TARBALL_GZ  := $(IMAGE_TARBALL).gz
+BUILD_IMAGE_TAR   := $(BUILD_DIR)/$(IMAGE_NAME)-$(TARGET_ARCH)-buildx.tar
+BINARY_PATH       := $(BUILD_DIR)/$(BINARY_NAME)-$(TARGET_ARCH)
 
 # dlc.dat source
 DLC_URL      := https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
@@ -84,6 +87,8 @@ docker-build:
 	@echo ">>> Building Docker image for $(DOCKER_PLATFORM)..."
 	docker buildx build \
 		--platform $(DOCKER_PLATFORM) \
+		--provenance=false \
+		--sbom=false \
 		--load \
 		-t $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG) \
 		-f $(DOCKER_DIR)/Dockerfile \
@@ -93,18 +98,28 @@ docker-build:
 	@echo ">>> Image: $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG)"
 	@docker images $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG)
 
-## Save Docker image as .tar.gz for MikroTik import
-## MikroTik: /container/add file=dns-geosite-proxy-armv7.tar.gz
+## Save Docker image as RouterOS-compatible .tar and .tar.gz
+## MikroTik: /container/add file=dns-geosite-proxy-armv7.tar
 docker-save: docker-build
 	@mkdir -p $(BUILD_DIR)
-	@echo ">>> Saving image to $(IMAGE_TARBALL)..."
-	docker save $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG) \
-		| gzip > $(IMAGE_TARBALL)
+	@echo ">>> Saving Docker buildx archive to $(BUILD_IMAGE_TAR)..."
+	docker save -o $(BUILD_IMAGE_TAR) $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG)
+	@echo ">>> Repacking archive for RouterOS import..."
+	rm -f $(IMAGE_TARBALL) $(IMAGE_TARBALL_GZ)
+	docker run --rm \
+		-v $(abspath $(BUILD_DIR)):/work \
+		$(SKOPEO_IMAGE) copy \
+		docker-archive:/work/$(notdir $(BUILD_IMAGE_TAR)) \
+		docker-archive:/work/$(notdir $(IMAGE_TARBALL)):$(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG)
+	rm -f $(BUILD_IMAGE_TAR)
+	@echo ">>> Compressing $(IMAGE_TARBALL_GZ)..."
+	gzip -c $(IMAGE_TARBALL) > $(IMAGE_TARBALL_GZ)
 	@echo ">>> Saved:"
 	@ls -lh $(IMAGE_TARBALL)
+	@ls -lh $(IMAGE_TARBALL_GZ)
 	@echo ""
 	@echo "Upload to MikroTik flash/USB, then:"
-	@echo "  /container/add file=$(IMAGE_NAME)-$(TARGET_ARCH).tar.gz interface=veth1 envlist=dns-proxy"
+	@echo "  /container/add file=$(IMAGE_NAME)-$(TARGET_ARCH).tar interface=veth1 envlist=dns-proxy"
 
 ## Load saved image into local Docker (for testing)
 docker-load:
@@ -171,7 +186,7 @@ help:
 	@echo "  make build         Cross-compile for ARMv7 (MikroTik)"
 	@echo "  make build-local   Build for local arch (dev/test)"
 	@echo "  make docker-build  Build Docker image linux/arm/v7"
-	@echo "  make docker-save   Save image as .tar.gz for MikroTik"
+	@echo "  make docker-save   Save image as RouterOS-compatible .tar and .tar.gz"
 	@echo "  make docker-load   Load saved image into local Docker"
 	@echo "  make download-dlc  Download latest dlc.dat from v2fly"
 	@echo "  make update-deps   go get -u ./... && go mod tidy"
