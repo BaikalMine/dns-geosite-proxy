@@ -3,19 +3,17 @@
 # For MikroTik deployment: use `make docker-save` to produce the .tar.gz image,
 # then upload to the router flash/USB drive and import via /container/add.
 #
-# Local test (runs ARM64 image via QEMU binfmt on x86):
+# Local test (runs ARMv7 image via QEMU binfmt on non-ARMv7 hosts):
 #   docker compose up
 #
-# Local test on native ARM64 machine (M1/M2 Mac, etc.):
-#   docker compose up  (no QEMU needed)
-
 services:
   dns-proxy:
+    platform: linux/arm/v7
     build:
       context: .
       dockerfile: docker/Dockerfile
       platforms:
-        - linux/arm64
+        - linux/arm/v7
     image: dns-geosite-proxy:latest
     container_name: dns-geosite-proxy
 

@@ -1,9 +1,9 @@
 # dns-geosite-proxy Makefile
 #
 # Targets:
-#   build         Cross-compile for ARM64 (MikroTik container)
+#   build         Cross-compile for ARMv7 (MikroTik container)
 #   build-local   Build for local arch (dev/test)
-#   docker-build  Build Docker image linux/arm64 via buildx
+#   docker-build  Build Docker image linux/arm/v7 via buildx
 #   docker-save   Save image as .tar.gz for MikroTik import
 #   docker-load   Load saved image into local Docker
 #   download-dlc  Download latest dlc.dat from v2fly releases
@@ -20,9 +20,14 @@ IMAGE_NAME   := dns-geosite-proxy
 IMAGE_TAG    ?= latest
 REGISTRY     ?=
 
-# Go cross-compilation settings (MikroTik hAP ax3 = linux/arm64)
+# RouterOS container target
+DOCKER_PLATFORM ?= linux/arm/v7
+TARGET_ARCH    := armv7
+
+# Go cross-compilation settings (linux/arm/v7 = GOARCH=arm + GOARM=7)
 GOOS         := linux
-GOARCH       := arm64
+GOARCH       := arm
+GOARM        := 7
 CGO_ENABLED  := 0
 
 # Version info - injected into binary via ldflags at build time
@@ -40,6 +45,8 @@ SRC_DIR      := ./src
 BUILD_DIR    := ./build
 DOCKER_DIR   := ./docker
 DATA_DIR     := ./data
+IMAGE_TARBALL := $(BUILD_DIR)/$(IMAGE_NAME)-$(TARGET_ARCH).tar.gz
+BINARY_PATH   := $(BUILD_DIR)/$(BINARY_NAME)-$(TARGET_ARCH)
 
 # dlc.dat source
 DLC_URL      := https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
@@ -52,15 +59,15 @@ all: build
 
 # Go build
 
-## Cross-compile for ARM64 (MikroTik target)
+## Cross-compile for ARMv7 (MikroTik target)
 build: tidy
 	@mkdir -p $(BUILD_DIR)
-	@echo ">>> Building $(GOOS)/$(GOARCH) binary..."
+	@echo ">>> Building $(GOOS)/$(GOARCH)/v$(GOARM) binary..."
 	cd $(SRC_DIR) && \
-	  CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
-	  go build $(LDFLAGS) -o ../$(BUILD_DIR)/$(BINARY_NAME)-$(GOARCH) .
-	@echo ">>> Done: $(BUILD_DIR)/$(BINARY_NAME)-$(GOARCH)"
-	@ls -lh $(BUILD_DIR)/$(BINARY_NAME)-$(GOARCH)
+	  CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) GOARM=$(GOARM) \
+	  go build $(LDFLAGS) -o ../$(BINARY_PATH) .
+	@echo ">>> Done: $(BINARY_PATH)"
+	@ls -lh $(BINARY_PATH)
 
 ## Build for local architecture (for development and unit tests)
 build-local:
@@ -71,12 +78,12 @@ build-local:
 
 # Docker
 
-## Build Docker image for linux/arm64 using buildx
+## Build Docker image for linux/arm/v7 using buildx
 ## Requires: docker buildx create --use (once per machine)
 docker-build:
-	@echo ">>> Building Docker image for linux/arm64..."
+	@echo ">>> Building Docker image for $(DOCKER_PLATFORM)..."
 	docker buildx build \
-		--platform linux/arm64 \
+		--platform $(DOCKER_PLATFORM) \
 		--load \
 		-t $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG) \
 		-f $(DOCKER_DIR)/Dockerfile \
@@ -87,21 +94,21 @@ docker-build:
 	@docker images $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG)
 
 ## Save Docker image as .tar.gz for MikroTik import
-## MikroTik: /container/add file=dns-geosite-proxy-arm64.tar.gz
+## MikroTik: /container/add file=dns-geosite-proxy-armv7.tar.gz
 docker-save: docker-build
 	@mkdir -p $(BUILD_DIR)
-	@echo ">>> Saving image to $(BUILD_DIR)/$(IMAGE_NAME)-arm64.tar.gz..."
+	@echo ">>> Saving image to $(IMAGE_TARBALL)..."
 	docker save $(REGISTRY)$(IMAGE_NAME):$(IMAGE_TAG) \
-		| gzip > $(BUILD_DIR)/$(IMAGE_NAME)-arm64.tar.gz
+		| gzip > $(IMAGE_TARBALL)
 	@echo ">>> Saved:"
-	@ls -lh $(BUILD_DIR)/$(IMAGE_NAME)-arm64.tar.gz
+	@ls -lh $(IMAGE_TARBALL)
 	@echo ""
 	@echo "Upload to MikroTik flash/USB, then:"
-	@echo "  /container/add file=$(IMAGE_NAME)-arm64.tar.gz interface=veth1 envlist=dns-proxy"
+	@echo "  /container/add file=$(IMAGE_NAME)-$(TARGET_ARCH).tar.gz interface=veth1 envlist=dns-proxy"
 
 ## Load saved image into local Docker (for testing)
 docker-load:
-	docker load < $(BUILD_DIR)/$(IMAGE_NAME)-arm64.tar.gz
+	docker load < $(IMAGE_TARBALL)
 
 # Data
 
@@ -161,9 +168,9 @@ help:
 	@echo ""
 	@echo "dns-geosite-proxy build targets"
 	@echo "================================"
-	@echo "  make build         Cross-compile for ARM64 (MikroTik)"
+	@echo "  make build         Cross-compile for ARMv7 (MikroTik)"
 	@echo "  make build-local   Build for local arch (dev/test)"
-	@echo "  make docker-build  Build Docker image linux/arm64"
+	@echo "  make docker-build  Build Docker image linux/arm/v7"
 	@echo "  make docker-save   Save image as .tar.gz for MikroTik"
 	@echo "  make docker-load   Load saved image into local Docker"
 	@echo "  make download-dlc  Download latest dlc.dat from v2fly"

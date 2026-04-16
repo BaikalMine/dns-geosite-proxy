@@ -6,7 +6,7 @@ Classifies DNS queries using [v2fly/domain-list-community](https://github.com/v2
 forwards them to the appropriate upstream, and pushes resolved IPs into MikroTik
 `ip/firewall/address-list` or `ipv6/firewall/address-list` via the REST API.
 
-Designed to run as a container on MikroTik RouterOS 7.x (tested on hAP ax3, arm64).
+Designed to run as a container on MikroTik RouterOS 7.x for ARMv7 devices.
 
 ## How it works
 
@@ -26,7 +26,7 @@ routing for VPN or direct paths.
 ## Requirements
 
 - Go 1.23+
-- Docker with buildx (for arm64 image build)
+- Docker with buildx (for linux/arm/v7 image build)
 - MikroTik RouterOS 7.4+ with container support enabled
 - USB flash drive on the MikroTik (recommended, 128 MB internal flash is tight)
 
@@ -44,25 +44,25 @@ make download-dlc
 cp config.example.json config.json
 # edit config.json: set mikrotik.address, username, password
 
-# 4. Build Docker image for arm64 and save as .tar.gz
+# 4. Build Docker image for linux/arm/v7 and save as .tar.gz
 make docker-save
-# -> build/dns-geosite-proxy-arm64.tar.gz
+# -> build/dns-geosite-proxy-armv7.tar.gz
 ```
 
 ## Deploy to MikroTik
 
-Tested on hAP ax3 (RBD53G-5HaxD2HaxD), RouterOS 7.21.3, arm64, USB flash as storage.
+Targets RouterOS 7.x containers on linux/arm/v7 devices. Use USB flash or other external storage when internal flash is tight.
 
 ### 1. Build and upload
 
 ```bash
-# Build arm64 image and save as tar.gz
+# Build ARMv7 image and save as tar.gz
 make docker-save
-# -> build/dns-geosite-proxy-arm64.tar.gz
+# -> build/dns-geosite-proxy-armv7.tar.gz
 
 # Upload image and dlc.dat to MikroTik USB
 # Note: USB mounts as usb1-part1 (partition name, not usb1)
-scp build/dns-geosite-proxy-arm64.tar.gz admin@10.0.10.1:/usb1-part1/
+scp build/dns-geosite-proxy-armv7.tar.gz admin@10.0.10.1:/usb1-part1/
 scp data/dlc.dat admin@10.0.10.1:/usb1-part1/mounts/dns-proxy/data/dlc.dat
 scp config.json admin@10.0.10.1:/usb1-part1/mounts/dns-proxy/config.json
 ```
@@ -77,7 +77,7 @@ The `container` package must be installed. Check:
 /system/package/print
 ```
 
-If missing — download the matching `container-X.XX.X-arm64.npk` from mikrotik.com,
+If missing — download the matching `container-X.XX.X-arm.npk` from mikrotik.com,
 upload it, and reboot.
 
 ### 3. Create API user and enable REST API
@@ -205,7 +205,7 @@ Where to store image layers and pull cache (set once):
 
 ```routeros
 /container/add \
-    file=usb1-part1/dns-geosite-proxy-arm64.tar.gz \
+    file=usb1-part1/dns-geosite-proxy-armv7.tar.gz \
     interface=veth-dns \
     root-dir=/usb1-part1/containers/dns-proxy \
     layer-dir=/usb1-part1/docker/layers \
@@ -369,7 +369,7 @@ dns-geosite-proxy/
 │       ├── client.go        REST API client + FormatTimeout/ParseTimeout
 │       └── addresslist.go   EnsureEntry: add / refresh / skip logic
 ├── docker/
-│   ├── Dockerfile           multi-stage: builder(host arch) + runtime(arm64)
+│   ├── Dockerfile           multi-stage: builder(host arch) + runtime(armv7)
 │   ├── entrypoint.sh        init: download dlc.dat -> crond -> exec dns-proxy
 │   └── update-dlc.sh        curl + sanity check + SIGHUP
 ├── config.example.json

@@ -1,10 +1,10 @@
 # ============================================================
 # dns-geosite-proxy - Multi-stage Dockerfile
-# Target: linux/arm64 (MikroTik hAP ax3, ROS 7.x container)
+# Target: linux/arm/v7 (RouterOS 7.x container)
 #
 # Build stages:
-#   builder  - cross-compiles Go binary for arm64 (runs on host arch)
-#   runtime  - minimal alpine arm64 image with binary + crond
+#   builder  - cross-compiles Go binary for target platform (runs on host arch)
+#   runtime  - minimal target-platform Alpine image with binary + crond
 #
 # Build: make docker-build
 # Save:  make docker-save
@@ -16,7 +16,8 @@
 FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.23-alpine AS builder
 
 ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+ARG TARGETARCH=arm
+ARG TARGETVARIANT=v7
 
 WORKDIR /build
 
@@ -26,9 +27,14 @@ RUN go mod download
 
 # Copy source and build
 COPY src/ .
-RUN CGO_ENABLED=0 \
-    GOOS=${TARGETOS} \
-    GOARCH=${TARGETARCH} \
+RUN set -eux; \
+    if [ "${TARGETARCH}" = "arm" ]; then \
+      GOARM="${TARGETVARIANT#v}"; \
+      export GOARM="${GOARM:-7}"; \
+    fi; \
+    CGO_ENABLED=0 \
+    GOOS="${TARGETOS}" \
+    GOARCH="${TARGETARCH}" \
     go build \
       -ldflags="-s -w -extldflags=-static" \
       -o dns-proxy \
@@ -36,7 +42,7 @@ RUN CGO_ENABLED=0 \
 
 # Stage 2: Runtime
 # Target platform image. Only curl + crond added on top of Alpine.
-FROM --platform=linux/arm64 alpine:3.19
+FROM --platform=${TARGETPLATFORM:-linux/arm/v7} alpine:3.19
 
 ARG BUILD_DATE
 ARG VERSION=dev
