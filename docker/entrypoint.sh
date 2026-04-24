@@ -3,7 +3,7 @@
 #
 # Sequence:
 #   1. Download dlc.dat on first start (if /data/dlc.dat is missing)
-#   2. Start crond for weekly auto-updates
+#   2. Start crond for daily auto-updates
 #   3. Exec dns-proxy (replaces this shell - PID 1)
 #
 # SIGHUP → dns-proxy reloads geosite without restart
@@ -30,7 +30,7 @@ if [ ! -f "${CONFIG_PATH}" ]; then
 fi
 
 # Start crond in background (-b = background, -l 8 = log level notice)
-echo "[entrypoint] Starting crond for weekly dlc.dat updates..."
+echo "[entrypoint] Starting crond for daily dlc.dat updates..."
 crond -b -l 8
 
 # Hand off to dns-proxy (exec replaces shell, proxy becomes PID 1)

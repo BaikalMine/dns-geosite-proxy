@@ -68,9 +68,9 @@ COPY docker/entrypoint.sh .
 COPY docker/update-dlc.sh .
 RUN chmod +x /app/entrypoint.sh /app/update-dlc.sh
 
-# Cron: update dlc.dat every Sunday at 03:00 local time
+# Cron: check dlc.dat updates daily at 03:00 local time
 # Log goes to /var/log/dlc-update.log (stdout accessible via docker logs)
-RUN echo "0 3 * * 0 /app/update-dlc.sh >> /var/log/dlc-update.log 2>&1" \
+RUN echo "0 3 * * * /app/update-dlc.sh >> /var/log/dlc-update.log 2>&1" \
       > /etc/crontabs/root
 
 # Required directories
