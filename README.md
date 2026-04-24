@@ -341,9 +341,10 @@ make vuln-check     # govulncheck CVE scan
 
 ## dlc.dat updates
 
-Inside the container, crond runs `update-dlc.sh` every Sunday at 03:00.
-After download it sends `SIGHUP` to `dns-proxy`, which reloads the geosite
-database in-place without restarting or dropping DNS service.
+Inside the container, crond runs `update-dlc.sh` every day at 03:00.
+The script uses a conditional download when `/data/dlc.dat` already exists.
+When a newer file is downloaded, it sends `SIGHUP` to `dns-proxy`, which reloads
+the geosite database in-place without restarting or dropping DNS service.
 
 Manual update from outside:
 ```bash
