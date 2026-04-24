@@ -6,7 +6,7 @@
 //  3. Forward to the selected upstream (UDP; DoH via net/http)
 //  4. Write DNS response to the client
 //  5. Extract A/AAAA records from the response
-//  6. Push IPs to MikroTik address-list (async goroutine if async_push=true)
+//  6. Push IPs to MikroTik address-list (bounded worker queue if async_push=true)
 //
 // The server listens on both UDP and TCP on the configured address.
 // ReloadGeosite() can be called from a SIGHUP handler - it rebuilds the
@@ -48,6 +48,24 @@ type Server struct {
 
 	// Shared HTTP client for DoH upstreams (connection pool reuse)
 	httpClient *http.Client
+
+	pushQueue chan pushJob
+	pushMu    sync.Mutex
+	pushSeen  map[string]time.Time
+}
+
+const (
+	pushQueueSize         = 1024
+	pushWorkerCount       = 2
+	pushDebounceInterval  = time.Minute
+	pushSeenCleanupLimit  = 4096
+	pushSeenCleanupMaxAge = 5 * time.Minute
+)
+
+type pushJob struct {
+	tag     string
+	comment string
+	ips     []net.IP
 }
 
 // NewServer constructs a Server. Does not start listening yet.
@@ -59,8 +77,11 @@ func NewServer(cfg *config.Config, db *geosite.Database, mt *mikrotik.Client) *S
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		pushQueue: make(chan pushJob, pushQueueSize),
+		pushSeen:  make(map[string]time.Time),
 	}
 	s.clf = classifier.New(&cfg.DNS, db)
+	s.startPushWorkers()
 	return s
 }
 
@@ -125,10 +146,7 @@ func (s *Server) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	domain := q.Name // FQDN with trailing dot, e.g. "google.com."
 
-	// Classify: determine tag + upstream for this domain
-	s.mu.RLock()
-	result := s.clf.Classify(domain)
-	s.mu.RUnlock()
+	result, fallback, hasFallback := s.classify(domain)
 
 	// Log every query at INFO: domain, tag, matched rule, upstream
 	logger.Debug("[dns] query %-40s tag=%-8s match=%s:%s upstream=%s",
@@ -147,39 +165,58 @@ func (s *Server) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	if queryTypeBlocked(q.Qtype, result.QueryStrategy) {
+		writeEmptyReply(w, req)
+		return
+	}
+
 	// Forward to upstream DNS
-	resp, err := s.forward(req, result.Upstream)
+	resp, usedResult, err := s.forwardWithFallback(req, result, fallback, hasFallback)
 	if err != nil {
 		logger.Warn("[dns] forward %s via %s: %v", strings.TrimSuffix(domain, "."), result.Upstream, err)
 		servfail(w, req)
 		return
 	}
+	filterResponse(resp, usedResult.QueryStrategy)
 
 	// Return response to client first (low latency)
 	_ = w.WriteMsg(resp)
 
 	// Push resolved IPs to MikroTik (if tag is not "direct")
-	if result.Tag != "direct" && result.Tag != "" {
-		ips := extractIPs(resp, result.QueryStrategy)
+	if usedResult.Tag != "direct" && usedResult.Tag != "" {
+		ips := extractIPs(resp, usedResult.QueryStrategy)
 		if len(ips) > 0 {
 			// Comment format: tag:matchvalue:matchtype:actual-domain
 			// Example: proxy:category-ru:geosite:mail.yandex.ru
 			//          proxy:google.com:domain:maps.google.com
 			//          proxy::fallback:somesite.com
 			comment := fmt.Sprintf("%s:%s:%s:%s",
-				result.Tag, result.MatchValue, result.MatchType,
+				usedResult.Tag, usedResult.MatchValue, usedResult.MatchType,
 				strings.TrimSuffix(domain, "."),
 			)
 			logger.Info("[dns] resolved  %-40s → %v",
 				strings.TrimSuffix(domain, "."), ips,
 			)
 			if s.cfg.AsyncPush {
-				go s.pushIPs(result.Tag, comment, ips)
+				s.enqueuePush(usedResult.Tag, comment, ips)
 			} else {
-				s.pushIPs(result.Tag, comment, ips)
+				s.pushIPs(usedResult.Tag, comment, ips)
 			}
 		}
 	}
+}
+
+func (s *Server) classify(domain string) (classifier.Result, classifier.Result, bool) {
+	s.mu.RLock()
+	clf := s.clf
+	s.mu.RUnlock()
+
+	result := clf.Classify(domain)
+	fallback, ok := clf.Fallback()
+	if result.MatchType == "fallback" {
+		ok = false
+	}
+	return result, fallback, ok
 }
 
 // servfail replies with SERVFAIL (RcodeServerFailure) to the client.
@@ -188,6 +225,52 @@ func servfail(w dns.ResponseWriter, req *dns.Msg) {
 	resp := new(dns.Msg)
 	resp.SetRcode(req, dns.RcodeServerFailure)
 	_ = w.WriteMsg(resp)
+}
+
+func writeEmptyReply(w dns.ResponseWriter, req *dns.Msg) {
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.RecursionAvailable = true
+	_ = w.WriteMsg(resp)
+}
+
+func (s *Server) forwardWithFallback(
+	req *dns.Msg,
+	result classifier.Result,
+	fallback classifier.Result,
+	hasFallback bool,
+) (*dns.Msg, classifier.Result, error) {
+	resp, err := s.forward(req, result.Upstream)
+	if !shouldTryFallback(result, hasFallback, resp, err) {
+		return resp, result, err
+	}
+
+	if queryTypeBlocked(req.Question[0].Qtype, fallback.QueryStrategy) {
+		empty := new(dns.Msg)
+		empty.SetReply(req)
+		empty.RecursionAvailable = true
+		return empty, fallback, nil
+	}
+
+	logger.Warn("[dns] retrying via fallback upstream=%s after %s failed", fallback.Upstream, result.Upstream)
+	fallbackResp, fallbackErr := s.forward(req, fallback.Upstream)
+	if fallbackErr != nil {
+		if err != nil {
+			return nil, result, fmt.Errorf("%w; fallback: %v", err, fallbackErr)
+		}
+		return nil, result, fmt.Errorf("rcode=%s; fallback: %w", dns.RcodeToString[resp.Rcode], fallbackErr)
+	}
+	return fallbackResp, fallback, nil
+}
+
+func shouldTryFallback(result classifier.Result, hasFallback bool, resp *dns.Msg, err error) bool {
+	if !hasFallback || result.SkipFallback || result.MatchType == "fallback" {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	return resp != nil && resp.Rcode == dns.RcodeNameError
 }
 
 // forward sends req to the upstream and returns the response.
@@ -206,25 +289,32 @@ func (s *Server) forward(req *dns.Msg, upstream string) (*dns.Msg, error) {
 		return s.forwardDoH(req, upstream)
 	}
 
-	// Plain DNS over UDP (with automatic TCP retry on truncation)
+	network := "udp"
 	addr := upstream
+	if strings.HasPrefix(addr, "tcp://") {
+		network = "tcp"
+		addr = strings.TrimPrefix(addr, "tcp://")
+	} else if strings.HasPrefix(addr, "udp://") {
+		addr = strings.TrimPrefix(addr, "udp://")
+	}
+
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		// No port specified - add default :53
 		addr = net.JoinHostPort(addr, "53")
 	}
 
 	client := &dns.Client{
-		Net:     "udp",
+		Net:     network,
 		Timeout: 5 * time.Second,
 	}
 
 	resp, _, err := client.Exchange(req, addr)
 	if err != nil {
-		return nil, fmt.Errorf("udp exchange with %s: %w", addr, err)
+		return nil, fmt.Errorf("%s exchange with %s: %w", network, addr, err)
 	}
 
 	// TC bit set → response was truncated, retry over TCP
-	if resp.Truncated {
+	if network == "udp" && resp.Truncated {
 		tcpClient := &dns.Client{
 			Net:     "tcp",
 			Timeout: 5 * time.Second,
@@ -308,9 +398,97 @@ func extractIPs(resp *dns.Msg, strategy string) []net.IP {
 	return ips
 }
 
+func queryTypeBlocked(qtype uint16, strategy string) bool {
+	switch strategy {
+	case "UseIPv4":
+		return qtype == dns.TypeAAAA
+	case "UseIPv6":
+		return qtype == dns.TypeA
+	default:
+		return false
+	}
+}
+
+func filterResponse(resp *dns.Msg, strategy string) {
+	if strategy == "" || strategy == "UseIP" {
+		return
+	}
+	resp.Answer = filterRRs(resp.Answer, strategy)
+	resp.Ns = filterRRs(resp.Ns, strategy)
+	resp.Extra = filterRRs(resp.Extra, strategy)
+}
+
+func filterRRs(rrs []dns.RR, strategy string) []dns.RR {
+	out := rrs[:0]
+	for _, rr := range rrs {
+		switch rr.(type) {
+		case *dns.A:
+			if strategy == "UseIPv6" {
+				continue
+			}
+		case *dns.AAAA:
+			if strategy == "UseIPv4" {
+				continue
+			}
+		}
+		out = append(out, rr)
+	}
+	return out
+}
+
+func (s *Server) startPushWorkers() {
+	for i := 0; i < pushWorkerCount; i++ {
+		go func() {
+			for job := range s.pushQueue {
+				s.pushIPs(job.tag, job.comment, job.ips)
+			}
+		}()
+	}
+}
+
+func (s *Server) enqueuePush(tag, comment string, ips []net.IP) {
+	filtered := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if s.markPushSeen(tag, ip) {
+			filtered = append(filtered, ip)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+
+	select {
+	case s.pushQueue <- pushJob{tag: tag, comment: comment, ips: filtered}:
+	default:
+		logger.Warn("[mikrotik] push queue full, dropping %d IPs for tag=%s", len(filtered), tag)
+	}
+}
+
+func (s *Server) markPushSeen(tag string, ip net.IP) bool {
+	now := time.Now()
+	key := tag + "|" + ip.String()
+
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+
+	if last, ok := s.pushSeen[key]; ok && now.Sub(last) < pushDebounceInterval {
+		return false
+	}
+	s.pushSeen[key] = now
+
+	if len(s.pushSeen) > pushSeenCleanupLimit {
+		for k, ts := range s.pushSeen {
+			if now.Sub(ts) > pushSeenCleanupMaxAge {
+				delete(s.pushSeen, k)
+			}
+		}
+	}
+
+	return true
+}
+
 // pushIPs adds resolved IPs to the appropriate MikroTik address-list.
 // comment is stored in the address-list entry for identification.
-// Called in a goroutine if async_push=true.
 func (s *Server) pushIPs(tag, comment string, ips []net.IP) {
 	listCfg, ok := s.cfg.Mikrotik.AddressLists[tag]
 	if !ok || listCfg == nil {

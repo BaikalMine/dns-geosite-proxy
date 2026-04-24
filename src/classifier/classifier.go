@@ -131,6 +131,21 @@ func (c *Classifier) Classify(domain string) Result {
 	return Result{Tag: "direct", MatchType: "fallback"}
 }
 
+// Fallback returns the configured catch-all server result, if one exists.
+func (c *Classifier) Fallback() (Result, bool) {
+	if c.fallback == nil {
+		return Result{}, false
+	}
+	return Result{
+		Tag:           c.fallback.cfg.Tag,
+		Upstream:      c.fallback.cfg.Address,
+		QueryStrategy: c.fallback.cfg.QueryStrategy,
+		SkipFallback:  false,
+		MatchType:     "fallback",
+		MatchValue:    "",
+	}, true
+}
+
 // matchServer returns the first matching rule and true, or zero value and false.
 // An empty rules list never matches (use fallback=true for a catch-all).
 func (c *Classifier) matchServer(domain string, srv *compiledServer) (compiledRule, bool) {

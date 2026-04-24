@@ -41,15 +41,19 @@ const (
 
 // Domain is a single domain entry from dlc.dat.
 type Domain struct {
-	Type     DomainType
-	Value    string
-	compiled *regexp.Regexp // cached compiled regex for DomainTypeRegex
+	Type  DomainType
+	Value string
 }
 
 // GeoSite holds all domain entries for one category (country_code in the proto).
 type GeoSite struct {
 	CategoryCode string
 	Domains      []Domain
+
+	fullIndex   map[string]struct{}
+	domainIndex map[string]struct{}
+	plain       []string
+	regex       []*regexp.Regexp
 }
 
 // Database is a thread-safe in-memory index over all geosite categories.
@@ -74,8 +78,7 @@ func Load(path string) (*Database, error) {
 	}
 	db.categories = cats
 
-	// Pre-compile all regex patterns at load time to avoid per-query overhead
-	db.compileRegexes()
+	db.buildIndexes()
 
 	return db, nil
 }
@@ -89,10 +92,6 @@ func (db *Database) CategoryCount() int {
 
 // MatchDomain reports whether domain belongs to the given category.
 // category is case-insensitive, e.g. "category-ru", "CATEGORY-RU".
-//
-// Performance note: called on every DNS query. The inner loop iterates
-// all domains in the category - for large categories (category-ads-all has
-// ~150k entries) this can be slow. TODO: build a trie/radix tree for O(log n).
 func (db *Database) MatchDomain(domain, category string) bool {
 	db.mu.RLock()
 	gs, ok := db.categories[strings.ToUpper(category)]
@@ -105,8 +104,29 @@ func (db *Database) MatchDomain(domain, category string) bool {
 	// Strip trailing dot (miekg/dns returns FQDN with trailing dot)
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 
-	for i := range gs.Domains {
-		if matchEntry(domain, &gs.Domains[i]) {
+	if _, ok := gs.fullIndex[domain]; ok {
+		return true
+	}
+
+	for suffix := domain; suffix != ""; {
+		if _, ok := gs.domainIndex[suffix]; ok {
+			return true
+		}
+		dot := strings.IndexByte(suffix, '.')
+		if dot < 0 {
+			break
+		}
+		suffix = suffix[dot+1:]
+	}
+
+	for _, plain := range gs.plain {
+		if strings.Contains(domain, plain) {
+			return true
+		}
+	}
+
+	for _, re := range gs.regex {
+		if re.MatchString(domain) {
 			return true
 		}
 	}
@@ -126,9 +146,9 @@ func (db *Database) Reload(path string) error {
 		return fmt.Errorf("parsing: %w", err)
 	}
 
-	// Compile regex patterns before taking the write lock
+	// Build query indexes before taking the write lock.
 	newDB := &Database{categories: cats}
-	newDB.compileRegexes()
+	newDB.buildIndexes()
 
 	db.mu.Lock()
 	db.categories = newDB.categories
@@ -137,45 +157,35 @@ func (db *Database) Reload(path string) error {
 	return nil
 }
 
-// compileRegexes pre-compiles all DomainTypeRegex entries.
+// buildIndexes prepares per-category lookup tables for query-time matching.
 // Called once after load/reload, NOT under a lock (single-goroutine context).
-func (db *Database) compileRegexes() {
+func (db *Database) buildIndexes() {
 	for _, gs := range db.categories {
+		gs.fullIndex = make(map[string]struct{})
+		gs.domainIndex = make(map[string]struct{})
+		gs.plain = nil
+		gs.regex = nil
+
 		for i := range gs.Domains {
 			d := &gs.Domains[i]
-			if d.Type == DomainTypeRegex {
+			val := strings.ToLower(d.Value)
+			switch d.Type {
+			case DomainTypeFull:
+				gs.fullIndex[val] = struct{}{}
+			case DomainTypeDomain:
+				gs.domainIndex[val] = struct{}{}
+			case DomainTypePlain:
+				gs.plain = append(gs.plain, val)
+			case DomainTypeRegex:
 				// Log compile errors but don't abort - skip bad patterns
 				re, err := regexp.Compile(d.Value)
 				if err == nil {
-					d.compiled = re
+					gs.regex = append(gs.regex, re)
 				}
 			}
 		}
+		gs.Domains = nil
 	}
-}
-
-// matchEntry checks domain against a single Domain entry.
-func matchEntry(domain string, d *Domain) bool {
-	val := strings.ToLower(d.Value)
-	switch d.Type {
-	case DomainTypeFull:
-		return domain == val
-
-	case DomainTypeDomain:
-		// "google.com" matches "google.com" itself and "mail.google.com"
-		return domain == val || strings.HasSuffix(domain, "."+val)
-
-	case DomainTypePlain:
-		// Substring / keyword match
-		return strings.Contains(domain, val)
-
-	case DomainTypeRegex:
-		if d.compiled != nil {
-			return d.compiled.MatchString(domain)
-		}
-		return false
-	}
-	return false
 }
 
 // Protobuf wire format decoder
